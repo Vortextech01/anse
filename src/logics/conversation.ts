@@ -10,7 +10,7 @@ import type { HandlerPayload, PromptResponse } from '@/types/provider'
 import type { Conversation } from '@/types/conversation'
 import type { ErrorMessage, Message } from '@/types/message'
 
-export const handlePrompt = async(conversation: Conversation, prompt?: string, signal?: AbortSignal) => {
+export const handlePrompt = async(conversation: Conversation, signal?: AbortSignal) => {
   const generalSettings = getGeneralSettings()
   const bot = getBotMetaById(conversation.bot)
   const [providerId, botId] = conversation.bot.split(':')
@@ -22,14 +22,14 @@ export const handlePrompt = async(conversation: Conversation, prompt?: string, s
 
   if (bot.type !== 'chat_continuous')
     clearMessagesByConversationId(conversation.id)
-  if (prompt) {
-    pushMessageByConversationId(conversation.id, {
-      id: `${conversation.id}:user:${Date.now()}`,
-      role: 'user',
-      content: prompt,
-      dateTime: new Date().getTime(),
-    })
-  }
+
+  let systemPrompt = "Hello, I'm your virtual assistant. How can I help you today?" // Hardcoded system prompt
+  pushMessageByConversationId(conversation.id, {
+    id: `${conversation.id}:system:${Date.now()}`,
+    role: 'system',
+    content: systemPrompt,
+    dateTime: new Date().getTime(),
+  })
 
   setLoadingStateByConversationId(conversation.id, true)
   let providerResponse: PromptResponse
@@ -39,7 +39,6 @@ export const handlePrompt = async(conversation: Conversation, prompt?: string, s
     botId,
     globalSettings: getSettingsByProviderId(provider.id),
     botSettings: {},
-    prompt,
     messages: [
       ...(conversation.systemInfo ? [{ role: 'system', content: conversation.systemInfo }] : []) as Message[],
       ...(destr(conversation.mockMessages) || []) as Message[],
@@ -86,52 +85,11 @@ export const handlePrompt = async(conversation: Conversation, prompt?: string, s
 
   // Update conversation title
   if (providerResponse && bot.type === 'chat_continuous' && !conversation.name) {
-    const inputText = conversation.systemInfo || prompt!
+    const inputText = conversation.systemInfo || systemPrompt
     const rapidPayload = generateRapidProviderPayload(promptHelper.summarizeText(inputText), provider.id)
     const generatedTitle = await getProviderResponse(provider.id, rapidPayload).catch(() => {}) as string || inputText
     updateConversationById(conversation.id, {
       name: generatedTitle.replace(/^['"\s]+|['"\s]+$/g, ''),
     })
   }
-}
-
-const getProviderResponse = async(providerId: string, payload: HandlerPayload, options?: {
-  caller: 'frontend' | 'backend'
-  signal?: AbortSignal
-}) => {
-  if (options?.caller === 'frontend') {
-    return callProviderHandler(providerId, payload, options.signal)
-  } else {
-    const backendResponse = await fetch(`/api/handle/${providerId}`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-      signal: options?.signal,
-    })
-    if (!backendResponse.ok) {
-      const error = await backendResponse.json()
-      throw new Error('Request failed', {
-        cause: error?.error,
-      })
-    }
-    if (backendResponse.headers.get('content-type')?.includes('text/plain'))
-      return backendResponse.text()
-    else
-      return backendResponse.body
-  }
-}
-
-// Called by both client and server
-export const callProviderHandler = async(providerId: string, payload: HandlerPayload, signal?: AbortSignal) => {
-  console.log('callProviderHandler', payload)
-
-  const provider = getProviderById(providerId)
-  if (!provider) return
-
-  let response: PromptResponse
-  if (payload.botId === 'temp')
-    response = await provider.handleRapidPrompt?.(payload.prompt!, payload.globalSettings)
-  else
-    response = await provider.handlePrompt?.(payload, signal)
-
-  return response
 }
